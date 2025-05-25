@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  backend:
+    build: .
+    container_name: BACKEND
+    ports:
+      - "5002:5002" # Expose the backend service on port 5002
+    environment:
+      - MONGO_URI=mongodb+srv://posfastfood:posfastfood@posfastfood.qc0ybg3.mongodb.net/?retryWrites=true&w=majority&appName=posfastfood
+    depends_on:
+      - mongo
+
+  mongo:
+    image: mongo:latest
+    container_name: pos-mongo
+    volumes:
+      - mongo_data:/data/db # Persist MongoDB data
+
+volumes:
+  mongo_data:

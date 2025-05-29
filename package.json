@@ -23,6 +23,7 @@
     "@react-navigation/stack": "^7.2.10",
     "axios": "^1.9.0",
     "body-parser": "^2.2.0",
+    "cloudinary": "^2.6.1",
     "cors": "^2.8.5",
     "dotenv": "^16.5.0",
     "expo": "~52.0.46",

@@ -5,48 +5,53 @@ import {
   TextInput,
   TouchableOpacity,
   StyleSheet,
-  Alert,
+  Modal,
   ImageBackground,
   SafeAreaView,
+  Pressable,
 } from 'react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
+import { auth } from '../../firebase/FirebaseConfig'; // Make sure this path is correct!
+import { signInWithEmailAndPassword } from 'firebase/auth';
 
 export default function LoginScreen() {
   const [gmail, setGmail] = useState('');
   const [password, setPassword] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [modalVisible, setModalVisible] = useState(false);
+  const [modalMessage, setModalMessage] = useState('');
   const router = useRouter();
+
+  const showErrorModal = (message: string) => {
+    setModalMessage(message);
+    setModalVisible(true);
+  };
 
   const handleLogin = async () => {
     try {
       // Admin login check
       if (gmail === 'admin' && password === 'password123') {
-        router.push('/pos/welcome-pos'); // Navigate to admin screen if needed
-        return;
-      }
-
-      // Registered user login (multi-user support)
-      const usersJson = await AsyncStorage.getItem('users');
-      const users = usersJson ? JSON.parse(usersJson) : [];
-
-      if (!users.length) {
-        Alert.alert('Login Failed', 'No registered account found. Please create one.');
-        return;
-      }
-
-      const foundUser = users.find(
-        (user: any) =>
-          user.email?.toLowerCase() === gmail.toLowerCase() &&
-          user.password === password
-      );
-
-      if (foundUser) {
         router.push('/pos/welcome-pos');
-      } else {
-        Alert.alert('Login Failed', 'Invalid Gmail or password');
+        return;
       }
-    } catch (error) {
-      Alert.alert('Error', 'Something went wrong during login.');
+
+      setLoading(true);
+
+      // Firebase Auth login
+      await signInWithEmailAndPassword(auth, gmail, password);
+      setLoading(false);
+      router.push('/pos/welcome-pos');
+    } catch (error: any) {
+      setLoading(false);
+      let message = 'Something went wrong during login.';
+      if (error.code === 'auth/user-not-found') {
+        message = 'No user found with this email.';
+      } else if (error.code === 'auth/wrong-password') {
+        message = 'Incorrect password.';
+      } else if (error.code === 'auth/invalid-email') {
+        message = 'Invalid email address.';
+      }
+      showErrorModal(message);
     }
   };
 
@@ -83,14 +88,35 @@ export default function LoginScreen() {
             placeholderTextColor="#aaa"
           />
 
-          <TouchableOpacity style={styles.button} onPress={handleLogin}>
-            <Text style={styles.buttonText}>Log In</Text>
+          <TouchableOpacity style={[styles.button, loading && { opacity: 0.6 }]} onPress={handleLogin} disabled={loading}>
+            <Text style={styles.buttonText}>{loading ? 'Logging in...' : 'Log In'}</Text>
           </TouchableOpacity>
 
           <TouchableOpacity style={styles.linkButton} onPress={handleCreateAccount}>
             <Text style={styles.linkText}>Don't have an account? Create one</Text>
           </TouchableOpacity>
         </View>
+
+        {/* Error Modal */}
+        <Modal
+          visible={modalVisible}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setModalVisible(false)}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalContent}>
+              <Text style={styles.modalTitle}>Login Failed</Text>
+              <Text style={styles.modalMessage}>{modalMessage}</Text>
+              <Pressable
+                style={styles.modalButton}
+                onPress={() => setModalVisible(false)}
+              >
+                <Text style={styles.modalButtonText}>OK</Text>
+              </Pressable>
+            </View>
+          </View>
+        </Modal>
       </SafeAreaView>
     </ImageBackground>
   );
@@ -154,5 +180,48 @@ const styles = StyleSheet.create({
   linkText: {
     color: '#007bff',
     fontSize: 14,
+  },
+  // Modal styles
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalContent: {
+    width: 300,
+    backgroundColor: '#fff',
+    borderRadius: 16,
+    padding: 24,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOpacity: 0.15,
+    shadowOffset: { width: 0, height: 2 },
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    marginBottom: 12,
+    color: '#d32f2f',
+  },
+  modalMessage: {
+    fontSize: 16,
+    color: '#333',
+    marginBottom: 20,
+    textAlign: 'center',
+  },
+  modalButton: {
+    backgroundColor: '#222',
+    borderRadius: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 32,
+    alignItems: 'center',
+  },
+  modalButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '500',
   },
 });

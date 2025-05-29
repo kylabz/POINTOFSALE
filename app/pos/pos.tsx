@@ -1,135 +1,112 @@
 import React, { useEffect, useState } from 'react';
 import {
-  View, Text, TextInput, TouchableOpacity, ScrollView,
-  StyleSheet, Image, Dimensions, Alert, ImageBackground as RNImageBackground, Modal, KeyboardAvoidingView, Platform, SafeAreaView
+  View, Text, TextInput, TouchableOpacity, FlatList,
+  StyleSheet, Image, Dimensions, Alert, Modal, KeyboardAvoidingView, Platform, SafeAreaView, ImageBackground
 } from 'react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useRouter, useLocalSearchParams } from 'expo-router';
+import { useRouter } from 'expo-router';
+import { collection, setDoc, doc, updateDoc, deleteDoc, onSnapshot, addDoc, getDoc } from 'firebase/firestore';
+import { db } from '../../firebase/FirebaseConfig';
 
 const screenWidth = Dimensions.get('window').width;
+const CARD_MARGIN = 8;
+const GRID_HORIZONTAL_PADDING = 10 * 2; // overlay padding horizontal
+const CARD_WIDTH = (screenWidth - GRID_HORIZONTAL_PADDING - CARD_MARGIN * 3) / 2;
+
 const DEFAULT_CATEGORIES = ['Pizza', 'Coffee', 'Sandwich', 'Softdrinks'];
+
+function isValidImageSource(image: string | undefined | null): boolean {
+  if (!image) return false;
+  return (
+    image.startsWith('http') ||
+    image.startsWith('file:') ||
+    image.startsWith('data:image') ||
+    image.startsWith('asset:/')
+  );
+}
 
 export default function POSMenu() {
   const router = useRouter();
   const [products, setProducts] = useState<any[]>([]);
   const [cart, setCart] = useState<any[]>([]);
-  const [categories, setCategories] = useState<string[]>([]);
+  const [categories, setCategories] = useState<string[]>(DEFAULT_CATEGORIES);
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const params = useLocalSearchParams();
-
-  // Modal state
   const [modalVisible, setModalVisible] = useState(false);
   const [productToDelete, setProductToDelete] = useState<string | null>(null);
 
   useEffect(() => {
-    loadData();
+    const unsubProducts = onSnapshot(collection(db, 'products'), (snapshot) => {
+      const prodArr: any[] = [];
+      snapshot.forEach(doc => prodArr.push({ ...doc.data(), id: doc.id }));
+      setProducts(prodArr);
+    });
+
+    const unsubCart = onSnapshot(collection(db, 'cart'), (snapshot) => {
+      const cartArr: any[] = [];
+      snapshot.forEach(doc => cartArr.push({ ...doc.data(), id: doc.id }));
+      setCart(cartArr);
+    });
+
+    return () => {
+      unsubProducts();
+      unsubCart();
+    };
   }, []);
 
-  const loadData = async () => {
-    try {
-      const storedProducts = await AsyncStorage.getItem('products');
-      const storedCart = await AsyncStorage.getItem('cart');
-      const storedCategories = await AsyncStorage.getItem('categories');
-
-      if (storedProducts) setProducts(JSON.parse(storedProducts));
-      if (storedCart) setCart(JSON.parse(storedCart));
-      if (storedCategories) {
-        setCategories(JSON.parse(storedCategories));
-      } else {
-        setCategories(DEFAULT_CATEGORIES);
-        await AsyncStorage.setItem('categories', JSON.stringify(DEFAULT_CATEGORIES));
-      }
-    } catch (error) {
-      console.error("Failed loading data:", error);
-    }
-  };
-
-  useEffect(() => {
-    if (params?.newProduct) {
-      const product = JSON.parse(params.newProduct as string);
-      setProducts(prev => {
-        const exists = prev.find(p => p.name === product.name);
-        if (exists) return prev;
-        const updated = [...prev, product];
-        AsyncStorage.setItem('products', JSON.stringify(updated));
-        return updated;
-      });
-    }
-  }, [params]);
-
-  const handleAddToCart = (product: any) => {
+  const handleAddToCart = async (product: any) => {
     if (product.quantity <= 0) {
       Alert.alert("Out of stock", "This product is currently unavailable.");
       return;
     }
-
-    const updatedProducts = products.map(p =>
-      p.name === product.name ? { ...p, quantity: p.quantity - 1 } : p
-    );
-    setProducts(updatedProducts);
-    AsyncStorage.setItem('products', JSON.stringify(updatedProducts));
-
-    const found = cart.find(item => item.name === product.name);
-    if (found) {
-      const updatedCart = cart.map(item =>
-        item.name === product.name
-          ? { ...item, quantity: item.quantity + 1 }
-          : item
-      );
-      setCart(updatedCart);
-      AsyncStorage.setItem('cart', JSON.stringify(updatedCart));
-    } else {
-      const newCart = [...cart, { ...product, quantity: 1 }];
-      setCart(newCart);
-      AsyncStorage.setItem('cart', JSON.stringify(newCart));
+    try {
+      const prodRef = doc(db, 'products', product.id);
+      await updateDoc(prodRef, { quantity: product.quantity - 1 });
+      const cartItemRef = doc(db, 'cart', product.id);
+      const cartSnap = await getDoc(cartItemRef);
+      if (cartSnap.exists()) {
+        await updateDoc(cartItemRef, { quantity: cartSnap.data().quantity + 1 });
+      } else {
+        await setDoc(cartItemRef, { ...product, quantity: 1 });
+      }
+    } catch (error) {
+      Alert.alert("Error", "Failed to add to cart.");
     }
   };
 
-  const handleRemoveFromCart = (index: number) => {
+  const handleRemoveFromCart = async (index: number) => {
     const itemToRemove = cart[index];
-    const updatedProducts = products.map(p =>
-      p.name === itemToRemove.name
-        ? { ...p, quantity: p.quantity + itemToRemove.quantity }
-        : p
-    );
-    setProducts(updatedProducts);
-    AsyncStorage.setItem('products', JSON.stringify(updatedProducts));
-
-    const updatedCart = cart.filter((_, i) => i !== index);
-    setCart(updatedCart);
-    AsyncStorage.setItem('cart', JSON.stringify(updatedCart));
+    try {
+      const prodRef = doc(db, 'products', itemToRemove.id);
+      const prodSnap = await getDoc(prodRef);
+      if (prodSnap.exists()) {
+        await updateDoc(prodRef, { quantity: prodSnap.data().quantity + itemToRemove.quantity });
+      }
+      const cartItemRef = doc(db, 'cart', itemToRemove.id);
+      await deleteDoc(cartItemRef);
+    } catch (error) {
+      Alert.alert("Error", "Failed to remove from cart.");
+    }
   };
 
-  // Modal open handler
-  const openDeleteModal = (productName: string) => {
-    setProductToDelete(productName);
+  const openDeleteModal = (productId: string) => {
+    setProductToDelete(productId);
     setModalVisible(true);
   };
 
-  // Modal confirm handler
   const confirmDeleteProduct = async () => {
     if (!productToDelete) return;
     try {
-      const updatedProducts = products.filter(product => product.name !== productToDelete);
-      await AsyncStorage.setItem('products', JSON.stringify(updatedProducts));
-      setProducts(updatedProducts);
-
-      const updatedCart = cart.filter(item => item.name !== productToDelete);
-      await AsyncStorage.setItem('cart', JSON.stringify(updatedCart));
-      setCart(updatedCart);
-
+      await deleteDoc(doc(db, 'products', productToDelete));
+      await deleteDoc(doc(db, 'cart', productToDelete));
       setModalVisible(false);
       setProductToDelete(null);
     } catch (error) {
       Alert.alert("Error", "Failed to delete product.");
-      console.error(error);
       setModalVisible(false);
       setProductToDelete(null);
     }
   };
 
-  // Modal cancel handler
   const cancelDeleteProduct = () => {
     setModalVisible(false);
     setProductToDelete(null);
@@ -140,10 +117,18 @@ export default function POSMenu() {
       Alert.alert("No Purchase", "Your cart is empty.");
       return;
     }
-    await AsyncStorage.setItem('receiptCart', JSON.stringify(cart));
-    setCart([]);
-    AsyncStorage.setItem('cart', JSON.stringify([]));
-    router.push('/pos/ReceiptScreen');
+    try {
+      await addDoc(collection(db, 'receipts'), {
+        items: cart,
+        timestamp: new Date()
+      });
+      for (const item of cart) {
+        await deleteDoc(doc(db, 'cart', item.id));
+      }
+      router.push('/pos/ReceiptScreen');
+    } catch (error) {
+      Alert.alert("Error", "Failed to generate receipt.");
+    }
   };
 
   const filteredProducts = products.filter(p =>
@@ -151,8 +136,63 @@ export default function POSMenu() {
     p.name?.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
+  // For FlatList: always two columns, fill with empty items if odd number
+  const productData = filteredProducts.length % 2 === 0
+    ? filteredProducts
+    : [...filteredProducts, { empty: true, id: 'empty' }];
+
+  const renderProduct = ({ item, index }: { item: any, index: number }) => {
+    if (item.empty) {
+      return <View style={[styles.card, { backgroundColor: 'transparent', elevation: 0, borderWidth: 0 }]} />;
+    }
+    const showImage = isValidImageSource(item.image);
+    return (
+      <View
+        style={[
+          styles.card,
+          item.quantity <= 0 && styles.cardDisabled
+        ]}
+      >
+        {showImage ? (
+          <Image
+            source={{ uri: item.image }}
+            style={styles.cardImage}
+            resizeMode="cover"
+          />
+        ) : (
+          <View style={styles.noImage}>
+            <Text style={styles.noImageText}>No Image</Text>
+          </View>
+        )}
+        <View style={styles.cardDetails}>
+          <Text style={styles.productCategory}>{item.category}</Text>
+          <Text style={styles.productName}>{item.name}</Text>
+          <Text style={styles.productPrice}>₱{item.price}</Text>
+          <Text style={styles.productStock}>Stock: {item.quantity}</Text>
+          <View style={styles.cardActions}>
+            <TouchableOpacity
+              style={styles.deleteButton}
+              onPress={() => openDeleteModal(item.id)}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.deleteText}>Delete</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.addToCartButton}
+              onPress={() => handleAddToCart(item)}
+              disabled={item.quantity <= 0}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.addToCartText}>Add</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    );
+  };
+
   return (
-    <RNImageBackground
+    <ImageBackground
       source={require('../../assets/background/fastfood.png')}
       style={styles.backgroundImage}
       resizeMode="cover"
@@ -167,104 +207,57 @@ export default function POSMenu() {
 
             <TextInput
               placeholder="Search product"
-              placeholderTextColor="#ccc"
+              placeholderTextColor="#aaa"
               style={styles.searchBar}
               value={searchQuery}
               onChangeText={setSearchQuery}
             />
 
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.categoryScroll}>
-              {categories.map(cat => (
-                <TouchableOpacity
-                  key={cat}
-                  style={[styles.categoryButton, selectedCategory === cat && styles.selectedCategory]}
-                  onPress={() => setSelectedCategory(cat)}
-                  activeOpacity={0.7}
-                >
-                  <Text style={[styles.categoryText, selectedCategory === cat && { color: '#fff' }]}>{cat}</Text>
-                </TouchableOpacity>
-              ))}
-              <TouchableOpacity
-                style={[styles.categoryButton, selectedCategory === null && styles.selectedCategory]}
-                onPress={() => setSelectedCategory(null)}
-                activeOpacity={0.7}
-              >
-                <Text style={[styles.categoryText, selectedCategory === null && { color: '#fff' }]}>All</Text>
-              </TouchableOpacity>
-            </ScrollView>
-
-            <ScrollView contentContainerStyle={[styles.grid, { flexGrow: 1 }]}>
-              {filteredProducts.map((product, index) => (
-                product.image ? (
-                  <RNImageBackground
-                    key={index}
-                    source={{ uri: product.image }}
-                    style={[styles.card, product.quantity <= 0 && styles.cardDisabled]}
-                    imageStyle={styles.cardImage}
-                    resizeMode="cover"
-                  >
-                    <View style={styles.cardOverlay}>
-                      <Text style={styles.productName}>{product.name}</Text>
-                      <Text style={styles.productPrice}>₱{product.price}</Text>
-                      <Text style={styles.productStock}>Stock: {product.quantity}</Text>
-                      <Text style={styles.productCategory}>{product.category}</Text>
-
-                      <TouchableOpacity
-                        style={styles.deleteButton}
-                        onPress={() => openDeleteModal(product.name)}
-                        activeOpacity={0.7}
-                      >
-                        <Text style={styles.deleteText}>Delete</Text>
-                      </TouchableOpacity>
-
-                      <TouchableOpacity
-                        style={styles.addToCartButton}
-                        onPress={() => handleAddToCart(product)}
-                        disabled={product.quantity <= 0}
-                        activeOpacity={0.7}
-                      >
-                        <Text style={styles.addToCartText}>Add to Cart</Text>
-                      </TouchableOpacity>
-                    </View>
-                  </RNImageBackground>
-                ) : (
-                  <View
-                    key={index}
+            {/* Category bar is always visible, not overlayed */}
+            <View style={styles.categoryBar}>
+              <FlatList
+                data={[...categories, 'All']}
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                keyExtractor={(item) => item}
+                renderItem={({ item }) => (
+                  <TouchableOpacity
                     style={[
-                      styles.card,
-                      styles.cardNoImage,
-                      product.quantity <= 0 && styles.cardDisabled
+                      styles.categoryButton,
+                      (selectedCategory === item || (item === 'All' && selectedCategory === null)) && styles.selectedCategory
                     ]}
+                    onPress={() => setSelectedCategory(item === 'All' ? null : item)}
+                    activeOpacity={0.7}
                   >
-                    <View style={styles.noImage}>
-                      <Text style={styles.noImageText}>No Image</Text>
-                    </View>
-                    <Text style={styles.productName}>{product.name}</Text>
-                    <Text style={styles.productPrice}>₱{product.price}</Text>
-                    <Text style={styles.productStock}>Stock: {product.quantity}</Text>
-                    <Text style={styles.productCategory}>{product.category}</Text>
+                    <Text style={[
+                      styles.categoryText,
+                      (selectedCategory === item || (item === 'All' && selectedCategory === null)) && { color: '#fff' }
+                    ]}>
+                      {item}
+                    </Text>
+                  </TouchableOpacity>
+                )}
+                contentContainerStyle={{ paddingVertical: 5 }}
+              />
+            </View>
 
-                    <TouchableOpacity
-                      style={styles.deleteButton}
-                      onPress={() => openDeleteModal(product.name)}
-                      activeOpacity={0.7}
-                    >
-                      <Text style={styles.deleteText}>Delete</Text>
-                    </TouchableOpacity>
+            {/* Product grid: always two columns, nice spacing */}
+            <FlatList
+              data={productData}
+              renderItem={renderProduct}
+              keyExtractor={(item, idx) => item.id ? item.id : `empty-${idx}`}
+              numColumns={2}
+              columnWrapperStyle={styles.gridRow}
+              contentContainerStyle={styles.grid}
+              ListEmptyComponent={
+                <Text style={{ color: '#888', textAlign: 'center', marginTop: 40 }}>No products found.</Text>
+              }
+              showsVerticalScrollIndicator={false}
+              style={{ flex: 1 }}
+              removeClippedSubviews={false}
+            />
 
-                    <TouchableOpacity
-                      style={styles.addToCartButton}
-                      onPress={() => handleAddToCart(product)}
-                      disabled={product.quantity <= 0}
-                      activeOpacity={0.7}
-                    >
-                      <Text style={styles.addToCartText}>Add to Cart</Text>
-                    </TouchableOpacity>
-                  </View>
-                )
-              ))}
-            </ScrollView>
-
+            {/* Cart and actions remain unchanged */}
             <View style={styles.cartContainer}>
               <Text style={styles.cartTitle}>Cart</Text>
               {cart.length === 0 ? (
@@ -298,7 +291,7 @@ export default function POSMenu() {
               </TouchableOpacity>
             </View>
 
-            {/* Custom Modal for Delete Confirmation */}
+            {/* Modal for Delete Confirmation */}
             <Modal
               animationType="fade"
               transparent={true}
@@ -325,22 +318,32 @@ export default function POSMenu() {
           </View>
         </KeyboardAvoidingView>
       </SafeAreaView>
-    </RNImageBackground>
+    </ImageBackground>
   );
 }
 
 const styles = StyleSheet.create({
   backgroundImage: { flex: 1, width: '100%', height: '100%' },
   overlay: { flex: 1, padding: 10 },
-  header: { fontSize: 28, fontWeight: 'bold', textAlign: 'center', marginBottom: 10, color: '#000' },
+  header: { fontSize: 26, fontWeight: 'bold', textAlign: 'center', marginBottom: 10, color: '#222' },
   searchBar: {
-    backgroundColor: '#eee', color: '#000',
+    backgroundColor: '#f2f2f2', color: '#222',
     borderRadius: 10, padding: 10,
     marginBottom: 10,
+    borderWidth: 1,
+    borderColor: '#e0e0e0'
   },
-  categoryScroll: { maxHeight: 50, marginBottom: 10 },
+  categoryBar: {
+    marginBottom: 10,
+    backgroundColor: 'rgba(255,255,255,0.95)',
+    borderRadius: 12,
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+    elevation: 2,
+    zIndex: 2,
+  },
   categoryButton: {
-    backgroundColor: '#ccc',
+    backgroundColor: '#eee',
     marginRight: 10,
     paddingHorizontal: 15,
     paddingVertical: 8,
@@ -350,89 +353,94 @@ const styles = StyleSheet.create({
     backgroundColor: '#0080ff',
   },
   categoryText: {
-    color: '#000',
+    color: '#222',
     fontWeight: 'bold',
   },
   grid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'center',
+    paddingBottom: 10,
+    flexGrow: 1,
+    paddingHorizontal: 0, // Remove extra padding to maximize card width
+  },
+  gridRow: {
+    justifyContent: 'space-between',
+    marginBottom: 10,
   },
   card: {
-    margin: 5,
-    width: screenWidth / 2 - 20,
-    borderRadius: 20,
+    margin: CARD_MARGIN,
+    width: CARD_WIDTH,
+    borderRadius: 18,
     overflow: 'hidden',
-    alignItems: 'center',
-    justifyContent: 'flex-end',
-    height: 220,
-    backgroundColor: '#fff', // fallback for no image
+    backgroundColor: '#fff',
+    marginBottom: 0,
+    elevation: 2,
+    borderWidth: 1,
+    borderColor: '#f0f0f0',
   },
   cardDisabled: {
     opacity: 0.5,
   },
   cardImage: {
     width: '100%',
-    height: '100%',
-    borderRadius: 20,
-  },
-  cardOverlay: {
-    width: '100%',
-    backgroundColor: 'rgba(0, 0, 0, 0.2)',
-    padding: 20,
-    alignItems: 'center',
-    borderBottomLeftRadius: 20,
-    borderBottomRightRadius: 20,
-  },
-  cardNoImage: {
-    backgroundColor: '#ccc',
-    height: 200,
-    justifyContent: 'flex-end',
+    height: 140,
+    backgroundColor: '#eee',
   },
   noImage: {
     width: '100%',
-    height: 120,
+    height: 140,
     justifyContent: 'center',
     alignItems: 'center',
+    backgroundColor: '#ccc',
   },
   noImageText: {
     color: '#888',
     fontWeight: 'bold',
   },
-  productName: { color: '#fff', fontWeight: '800', fontSize: 18, marginBottom: 2, textAlign: 'center' },
-  productPrice: { color: '#fff', fontWeight: '700', fontSize: 15,  marginBottom: 2 },
-  productStock: { color: '#fff', fontWeight: '800', fontSize: 15, marginBottom: 2 },
-  productCategory: { color: '#fff', marginBottom: 10, fontSize: 12 },
+  cardDetails: {
+    width: '100%',
+    alignItems: 'center',
+    padding: 10,
+    backgroundColor: '#fff',
+  },
+  productCategory: { color: '#0080ff', fontWeight: 'bold', fontSize: 13, marginBottom: 2 },
+  productName: { color: '#222', fontWeight: '700', fontSize: 16, marginBottom: 2, textAlign: 'center' },
+  productPrice: { color: '#222', fontWeight: '600', fontSize: 15, marginBottom: 2 },
+  productStock: { color: '#222', fontWeight: '600', fontSize: 13, marginBottom: 2 },
+  cardActions: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    width: '100%',
+    marginTop: 8,
+  },
   deleteButton: {
     backgroundColor: '#ff4444',
     paddingVertical: 5,
-    paddingHorizontal: 15,
+    paddingHorizontal: 12,
     borderRadius: 15,
-    marginBottom: 8,
+    marginRight: 8,
   },
   deleteText: { color: '#fff', fontWeight: 'bold' },
   addToCartButton: {
     backgroundColor: '#00aa00',
-    paddingVertical: 8,
-    paddingHorizontal: 20,
+    paddingVertical: 5,
+    paddingHorizontal: 12,
     borderRadius: 15,
   },
   addToCartText: { color: '#fff', fontWeight: 'bold' },
   cartContainer: {
-    backgroundColor: '#eee',
+    backgroundColor: '#fafafa',
     padding: 10,
     marginTop: 10,
     borderRadius: 10,
     maxHeight: 150,
   },
-  cartTitle: { color: '#000', fontWeight: 'bold', fontSize: 18, marginBottom: 5 },
+  cartTitle: { color: '#222', fontWeight: 'bold', fontSize: 18, marginBottom: 5 },
   emptyCart: { color: '#999', fontStyle: 'italic' },
   cartRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     marginBottom: 5,
   },
-  cartItem: { color: '#000' },
+  cartItem: { color: '#222' },
   remove: { color: '#f44', fontWeight: 'bold' },
   buttonRow: {
     flexDirection: 'row',

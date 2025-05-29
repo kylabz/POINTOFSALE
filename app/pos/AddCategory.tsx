@@ -1,20 +1,30 @@
 import React, { useState, useEffect } from 'react';
-import { View, TextInput, TouchableOpacity, Text, StyleSheet, Alert, ImageBackground, SafeAreaView, Platform, StatusBar, FlatList } from 'react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import {
+  View, TextInput, TouchableOpacity, Text, StyleSheet, Alert,
+  ImageBackground, SafeAreaView, Platform, StatusBar, FlatList
+} from 'react-native';
 import { useRouter } from 'expo-router';
+import { db } from '../../firebase/FirebaseConfig';
+import {
+  collection, addDoc, serverTimestamp, getDocs, deleteDoc, doc, onSnapshot
+} from 'firebase/firestore';
 
 export default function AddCategory() {
   const [category, setCategory] = useState('');
   const [categories, setCategories] = useState<string[]>([]);
   const router = useRouter();
 
+  // Load categories from Firestore
   useEffect(() => {
-    const loadCategories = async () => {
-      const stored = await AsyncStorage.getItem('categories');
-      if (stored) setCategories(JSON.parse(stored));
-      else setCategories(['Pizza', 'Coffee', 'Sandwich', 'Softdrinks']);
-    };
-    loadCategories();
+    const unsubscribe = onSnapshot(collection(db, 'categories'), (snapshot) => {
+      const cats: string[] = [];
+      snapshot.forEach(doc => {
+        const data = doc.data();
+        if (data && data.name) cats.push(data.name);
+      });
+      setCategories(cats.length > 0 ? cats : ['Pizza', 'Coffee', 'Sandwich', 'Softdrinks']);
+    });
+    return () => unsubscribe();
   }, []);
 
   const handleAddCategory = async () => {
@@ -27,19 +37,35 @@ export default function AddCategory() {
       Alert.alert("Error", "Category already exists.");
       return;
     }
-
-    const updatedCategories = [...categories, trimmed];
-    setCategories(updatedCategories);
-    await AsyncStorage.setItem('categories', JSON.stringify(updatedCategories));
-    Alert.alert("Success", `Category "${trimmed}" added.`);
-    setCategory('');
+    try {
+      await addDoc(collection(db, 'categories'), {
+        name: trimmed,
+        createdAt: serverTimestamp(),
+      });
+      Alert.alert("Success", `Category "${trimmed}" added.`);
+      setCategory('');
+    } catch (e) {
+      Alert.alert("Error", "Failed to add category.");
+    }
   };
 
   const handleDeleteCategory = async (item: string) => {
-    const updated = categories.filter(cat => cat !== item);
-    setCategories(updated);
-    await AsyncStorage.setItem('categories', JSON.stringify(updated));
-    Alert.alert("Deleted", `Category "${item}" removed.`);
+    try {
+      // Find the Firestore doc with this category name
+      const querySnapshot = await getDocs(collection(db, 'categories'));
+      let docIdToDelete: string | null = null;
+      querySnapshot.forEach(docSnap => {
+        if (docSnap.data().name === item) {
+          docIdToDelete = docSnap.id;
+        }
+      });
+      if (docIdToDelete) {
+        await deleteDoc(doc(db, 'categories', docIdToDelete));
+        Alert.alert("Deleted", `Category "${item}" removed.`);
+      }
+    } catch (e) {
+      Alert.alert("Error", "Failed to delete category.");
+    }
   };
 
   const renderCategoryItem = ({ item }: { item: string }) => (

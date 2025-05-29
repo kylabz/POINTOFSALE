@@ -1,18 +1,32 @@
 {
-  "name": "your-backend",
+  "name": "fastfood-firebase-backend",
   "version": "1.0.0",
-  "description": "",
-  "main": "server.js",
+  "description": "Firebase Admin backend for FastFood POS system",
+  "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node server.js"
+    "start": "node index.js",
+    "dev": "nodemon index.js",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "test": "jest"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": [
+    "firebase",
+    "firebase-admin",
+    "pos",
+    "fastfood"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
   "type": "commonjs",
   "dependencies": {
-    "cors": "^2.8.5",
-    "express": "^5.1.0"
+    "firebase-admin": "^11.10.1",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "eslint": "^8.56.0",
+    "jest": "^29.7.0",
+    "nodemon": "^3.1.0",
+    "prettier": "^3.2.5"
   }
 }

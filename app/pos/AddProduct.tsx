@@ -6,24 +6,43 @@ import {
   Button,
   StyleSheet,
   Image,
-  TouchableOpacity,
   Alert,
   ActivityIndicator,
+  ScrollView,
+  KeyboardAvoidingView,
+  SafeAreaView,
+  Platform,
 } from 'react-native';
 import { Picker } from '@react-native-picker/picker';
 import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { db } from '../../firebase/FirebaseConfig';
+import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
+
+const DEFAULT_CATEGORIES = ['Pizza', 'Coffee', 'Sandwich', 'Softdrinks'];
+
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      resolve(reader.result as string);
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
 
 export default function AddProduct() {
   const router = useRouter();
+  const [name, setName] = useState('');
   const [price, setPrice] = useState('');
   const [quantity, setQuantity] = useState('');
-  const [image, setImage] = useState<string | null>(null);
-  const [imagePicking, setImagePicking] = useState(false);
   const [category, setCategory] = useState('');
-  const [name, setName] = useState('');
   const [categories, setCategories] = useState<string[]>([]);
+  const [image, setImage] = useState<File | string | null>(null); // string (mobile) or File (web)
+  const [imagePreviewUri, setImagePreviewUri] = useState<string | null>(null); // always a displayable URI/base64
+  const [imagePicking, setImagePicking] = useState(false);
   const [loading, setLoading] = useState(false);
 
   // Load categories on mount
@@ -34,32 +53,48 @@ export default function AddProduct() {
         if (storedCategories) {
           setCategories(JSON.parse(storedCategories));
         } else {
-          const defaultCategories = ['Pizza', 'Coffee', 'Sandwich', 'Softdrinks'];
-          setCategories(defaultCategories);
-          await AsyncStorage.setItem('categories', JSON.stringify(defaultCategories));
+          setCategories(DEFAULT_CATEGORIES);
+          await AsyncStorage.setItem('categories', JSON.stringify(DEFAULT_CATEGORIES));
         }
       } catch (error) {
-        console.error('Failed to load categories', error);
+        setCategories(DEFAULT_CATEGORIES);
       }
     })();
   }, []);
 
-  // Pick image from gallery and save local URI
+  // Pick image from gallery and save local URI (mobile only)
   const handlePickImage = async () => {
     setImagePicking(true);
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      quality: 1,
-    });
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        quality: 1,
+      });
 
-    if (!result.canceled && result.assets && result.assets[0]?.uri) {
-      setImage(result.assets[0].uri); // Save the local file URI
+      if (!result.canceled && result.assets && result.assets[0]?.uri) {
+        setImage(result.assets[0].uri);
+        setImagePreviewUri(result.assets[0].uri);
+      }
+    } catch (err) {
+      Alert.alert('Error', 'Failed to pick image.');
+      console.error('ImagePicker error:', err);
     }
     setImagePicking(false);
   };
 
-  // Add product and save locally
+  // Handle web file input
+  const handleWebFileInput = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setImage(file);
+      // Convert to base64 for preview and storage
+      const base64 = await fileToBase64(file);
+      setImagePreviewUri(base64);
+    }
+  };
+
+  // Add product and save to Firestore (image is local URI or base64 string)
   const handleAdd = async () => {
     if (!name || !price || !category) {
       Alert.alert('Missing Fields', 'Please fill in all required fields');
@@ -71,28 +106,40 @@ export default function AddProduct() {
     }
     setLoading(true);
 
-    const newProduct = {
-      name,
-      price: parseFloat(price),
-      quantity: parseInt(quantity) || 0,
-      category,
-      image, // This is the local file URI
-    };
-
     try {
-      // Save to AsyncStorage
-      const storedProducts = await AsyncStorage.getItem('products');
-      const products = storedProducts ? JSON.parse(storedProducts) : [];
-      products.push(newProduct);
-      await AsyncStorage.setItem('products', JSON.stringify(products));
+      let imageUrl: string | null = null;
+      if (image) {
+        if (typeof image === 'string') {
+          // Mobile: URI
+          imageUrl = image;
+        } else if (Platform.OS === 'web' && image instanceof File) {
+          // Web: base64 string
+          imageUrl = await fileToBase64(image);
+        }
+      }
 
-      // Go back to POS screen and pass new product
-      router.push({
-        pathname: '/pos/pos',
-        params: { newProduct: JSON.stringify(newProduct) },
-      });
-    } catch (error) {
-      Alert.alert('Error', 'Failed to save product locally.');
+      const newProduct = {
+        name,
+        price: parseFloat(price),
+        quantity: parseInt(quantity) || 0,
+        category,
+        image: imageUrl,
+        createdAt: serverTimestamp(),
+      };
+
+      await addDoc(collection(db, 'products'), newProduct);
+
+      Alert.alert('Success', 'Product added!');
+      setName('');
+      setPrice('');
+      setQuantity('');
+      setCategory('');
+      setImage(null);
+      setImagePreviewUri(null);
+      router.push('/pos/pos'); // Update this if your POS route is different
+    } catch (error: any) {
+      console.error('Add product error:', error);
+      Alert.alert('Error', error.message || 'Failed to save product.');
     } finally {
       setLoading(false);
     }
@@ -112,9 +159,7 @@ export default function AddProduct() {
             try {
               const updatedCategories = categories.filter(cat => cat !== catToDelete);
               await AsyncStorage.setItem('categories', JSON.stringify(updatedCategories));
-              setCategories([...updatedCategories]); // Spread to force re-render
-
-              // Clear selected category if deleted
+              setCategories([...updatedCategories]);
               if (category === catToDelete) {
                 setCategory('');
               }
@@ -129,66 +174,106 @@ export default function AddProduct() {
   };
 
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>Add Product</Text>
+    <SafeAreaView style={{ flex: 1 }}>
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      >
+        <ScrollView contentContainerStyle={styles.container}>
+          <Text style={styles.title}>Add Product</Text>
 
-      <TextInput
-        placeholder="Product Name"
-        placeholderTextColor="#888"
-        value={name}
-        onChangeText={setName}
-        style={styles.input}
-      />
+          <TextInput
+            placeholder="Product Name"
+            placeholderTextColor="#888"
+            value={name}
+            onChangeText={setName}
+            style={styles.input}
+            editable={!loading}
+          />
 
-      <Button title="Pick Image" onPress={handlePickImage} />
-      {imagePicking && <ActivityIndicator size="small" color="#007bff" style={{ marginVertical: 10 }} />}
-      {image && (
-        <View style={styles.imagePreviewContainer}>
-          <Text style={styles.imageText}>Image selected:</Text>
-          <Image source={{ uri: image }} style={styles.imagePreview} />
-        </View>
-      )}
+          {/* Mobile: Pick image from gallery */}
+          <Button title="Pick Image" onPress={handlePickImage} disabled={loading || imagePicking} />
 
-      <TextInput
-        placeholder="Price"
-        placeholderTextColor="#888"
-        keyboardType="numeric"
-        value={price}
-        onChangeText={setPrice}
-        style={styles.input}
-      />
+          {/* Web: File input */}
+          {Platform.OS === 'web' && (
+            <input
+              type="file"
+              accept="image/*"
+              onChange={handleWebFileInput}
+              style={{ marginBottom: 16 }}
+            />
+          )}
 
-      <TextInput
-        placeholder="Quantity"
-        placeholderTextColor="#888"
-        keyboardType="numeric"
-        value={quantity}
-        onChangeText={setQuantity}
-        style={styles.input}
-      />
+          {imagePicking && <ActivityIndicator size="small" color="#007bff" style={{ marginVertical: 10 }} />}
+          {imagePreviewUri && (
+            <View style={styles.imagePreviewContainer}>
+              <Text style={styles.imageText}>Image selected:</Text>
+              {Platform.OS === 'web' ? (
+                <img
+                  src={imagePreviewUri}
+                  alt="preview"
+                  style={{ width: 150, height: 150, borderRadius: 8, marginTop: 5, objectFit: 'cover' }}
+                />
+              ) : (
+                <Image source={{ uri: imagePreviewUri }} style={styles.imagePreview} />
+              )}
+            </View>
+          )}
 
-      <Text style={styles.label}>Category</Text>
-      <View style={styles.pickerWrapper}>
-        <Picker
-          selectedValue={category}
-          onValueChange={(val) => setCategory(val)}
-          dropdownIconColor="#fff"
-          style={{ color: '#fff' }}
-        >
-          <Picker.Item label="Select a category" value="" color="#999" />
+          <TextInput
+            placeholder="Price"
+            placeholderTextColor="#888"
+            keyboardType="numeric"
+            value={price}
+            onChangeText={setPrice}
+            style={styles.input}
+            editable={!loading}
+          />
+
+          <TextInput
+            placeholder="Quantity"
+            placeholderTextColor="#888"
+            keyboardType="numeric"
+            value={quantity}
+            onChangeText={setQuantity}
+            style={styles.input}
+            editable={!loading}
+          />
+
+          <Text style={styles.label}>Category</Text>
+          <View style={styles.pickerWrapper}>
+            <Picker
+              selectedValue={category}
+              onValueChange={(val) => setCategory(val)}
+              dropdownIconColor="#fff"
+              style={{ color: '#fff' }}
+              enabled={!loading}
+            >
+              <Picker.Item label="Select a category" value="" color="#999" />
+              {categories.map((cat) => (
+                <Picker.Item key={cat} label={cat} value={cat} />
+              ))}
+            </Picker>
+          </View>
+
+          <Button title={loading ? "Adding..." : "Add Product"} onPress={handleAdd} disabled={loading || imagePicking} />
+
+          {/* Optional: Category management UI */}
+          <Text style={[styles.label, { marginTop: 20 }]}>Manage Categories</Text>
           {categories.map((cat) => (
-            <Picker.Item key={cat} label={cat} value={cat} />
+            <View key={cat} style={styles.categoryRow}>
+              <Text style={styles.categoryText}>{cat}</Text>
+              <Button title="Delete" color="#c0392b" onPress={() => handleDeleteCategory(cat)} disabled={loading} />
+            </View>
           ))}
-        </Picker>
-      </View>
-
-      <Button title={loading ? "Adding..." : "Add Product"} onPress={handleAdd} disabled={loading || imagePicking} />
-    </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, padding: 20, backgroundColor: '#000' },
+  container: { flexGrow: 1, padding: 20, backgroundColor: '#000' },
   title: { fontSize: 22, fontWeight: 'bold', marginBottom: 16, color: '#fff' },
   input: {
     borderWidth: 1,

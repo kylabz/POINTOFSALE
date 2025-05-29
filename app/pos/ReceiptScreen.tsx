@@ -8,16 +8,46 @@ import {
   ScrollView,
   ImageBackground,
   Alert,
+  ActivityIndicator,
 } from 'react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
 import * as Print from 'expo-print';
+import { db } from '../../firebase/FirebaseConfig';
+import { collection, addDoc, getDocs, Timestamp, serverTimestamp } from 'firebase/firestore';
 
 type CartItem = {
   name: string;
   price: number;
   quantity: number;
 };
+
+type Receipt = {
+  customerName: string;
+  customerType: string;
+  items: CartItem[];
+  total: number;
+  date: Timestamp;
+};
+
+function formatFirestoreDate(date: Timestamp | Date | string | number): string {
+  let jsDate: Date;
+  if (date instanceof Timestamp) {
+    jsDate = date.toDate();
+  } else if (typeof date === 'string' || typeof date === 'number') {
+    jsDate = new Date(date);
+  } else {
+    jsDate = date as Date;
+  }
+  return jsDate.toLocaleString('en-PH', {
+    timeZone: 'Asia/Manila',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: 'numeric',
+    hour12: true,
+  });
+}
 
 export default function ReceiptScreen() {
   const router = useRouter();
@@ -28,28 +58,41 @@ export default function ReceiptScreen() {
   const [customerName, setCustomerName] = useState('');
   const [customerType, setCustomerType] = useState('Dine-in');
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [lastReceipt, setLastReceipt] = useState<Receipt | null>(null);
 
+  // For demonstration, fetch the latest cart from Firestore (or you can pass it via navigation)
   useEffect(() => {
-    const loadCart = async () => {
-      const storedCart = await AsyncStorage.getItem('receiptCart');
-      if (storedCart) {
-        setCart(JSON.parse(storedCart));
+    // You can fetch the cart from a Firestore collection, or pass it via navigation params
+    // For this example, let's fetch the latest receipt's cart for demo purposes
+    const fetchLatestReceipt = async () => {
+      setLoading(true);
+      try {
+        const receiptsSnap = await getDocs(collection(db, 'receipts'));
+        let latest: Receipt | null = null;
+        receiptsSnap.forEach(doc => {
+          const data = doc.data() as Receipt;
+          if (!latest || (data.date && data.date.seconds > (latest.date?.seconds || 0))) {
+            latest = data;
+          }
+        });
+        if (latest && latest.items) {
+          setCart(latest.items);
+          setLastReceipt(latest);
+        } else {
+          setCart([]);
+        }
+      } catch (e) {
+        setCart([]);
       }
+      setLoading(false);
     };
-    loadCart();
+    fetchLatestReceipt();
   }, []);
 
   const total = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
 
-  const currentDateTime = new Date().toLocaleString('en-PH', {
-    timeZone: 'Asia/Manila',
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: 'numeric',
-    hour12: true,
-  });
+  const currentDateTime = formatFirestoreDate(new Date());
 
   const handlePayment = () => {
     const paid = parseFloat(amountPaid);
@@ -119,25 +162,16 @@ export default function ReceiptScreen() {
     try {
       await Print.printAsync({ html });
 
-      // Save receipt to backend
-      await fetch('http://192.168.1.100:3000/api/receipts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          customerName,
-          customerType,
-          items: cart.map((item) => ({
-            product: item.name,
-            quantity: item.quantity,
-            price: item.price,
-          })),
-          total,
-          date: new Date(),
-        }),
+      // Save receipt to Firestore
+      await addDoc(collection(db, 'receipts'), {
+        customerName,
+        customerType,
+        items: cart,
+        total,
+        date: serverTimestamp(),
       });
 
       // Clear cart and inputs on success
-      await AsyncStorage.removeItem('receiptCart');
       setCart([]);
       setAmountPaid('');
       setChange(null);
@@ -184,7 +218,9 @@ export default function ReceiptScreen() {
           />
         </View>
 
-        {cart.length === 0 ? (
+        {loading ? (
+          <ActivityIndicator size="large" color="#fff" style={{ marginVertical: 20 }} />
+        ) : cart.length === 0 ? (
           <Text style={styles.empty}>Cart is empty.</Text>
         ) : (
           cart.map((item, i) => (
